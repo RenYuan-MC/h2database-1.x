@@ -18,7 +18,6 @@ import org.h2.security.auth.AuthenticationInfo;
 import org.h2.security.auth.Authenticator;
 import org.h2.util.MathUtils;
 import org.h2.util.ParserUtil;
-import org.h2.util.ThreadDeadlockDetector;
 import org.h2.util.Utils;
 
 /**
@@ -37,9 +36,7 @@ public class Engine implements SessionFactory {
 
     private Engine() {
         // use getInstance()
-        if (SysProperties.THREAD_DEADLOCK_DETECTOR) {
-            ThreadDeadlockDetector.init();
-        }
+        // RenYuan wasm branch: ThreadDeadlockDetector requires java.lang.management.
     }
 
     public static Engine getInstance() {

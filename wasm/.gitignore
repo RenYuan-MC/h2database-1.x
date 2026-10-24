@@ -1,0 +1,9 @@
+.gradle/
+build/
+out/
+
+# Generated wasm / debug artifacts (rebuilt by generateWasmGC)
+*.wasm
+*.wasm.teadbg
+*.wat
+*.class

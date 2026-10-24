@@ -11,6 +11,7 @@ import java.io.OutputStream;
 import java.nio.channels.FileChannel;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import org.h2.store.fs.wasm.FilePathWasm;
 import org.h2.util.MathUtils;
 
 /**
@@ -65,27 +66,16 @@ public abstract class FilePath {
     private static void registerDefaultProviders() {
         if (providers == null || defaultProvider == null) {
             ConcurrentHashMap<String, FilePath> map = new ConcurrentHashMap<>();
-            for (String c : new String[] {
-                    "org.h2.store.fs.FilePathDisk",
-                    "org.h2.store.fs.FilePathMem",
-                    "org.h2.store.fs.FilePathMemLZF",
-                    "org.h2.store.fs.FilePathNioMem",
-                    "org.h2.store.fs.FilePathNioMemLZF",
-                    "org.h2.store.fs.FilePathSplit",
-                    "org.h2.store.fs.FilePathNio",
-                    "org.h2.store.fs.FilePathNioMapped",
-                    "org.h2.store.fs.FilePathAsync",
-                    "org.h2.store.fs.FilePathZip",
-                    "org.h2.store.fs.FilePathRetryOnInterrupt"
+            // RenYuan wasm branch: the browser runtime has no filesystem, so only the
+            // in-memory provider and the read-only database image provider exist. Both are
+            // instantiated directly because wasmGC does not keep constructor metadata.
+            for (FilePath p : new FilePath[] {
+                    new FilePathMem(),
+                    new FilePathWasm()
             }) {
-                try {
-                    FilePath p = (FilePath) Class.forName(c).getDeclaredConstructor().newInstance();
-                    map.put(p.getScheme(), p);
-                    if (defaultProvider == null) {
-                        defaultProvider = p;
-                    }
-                } catch (Exception e) {
-                    // ignore - the files may be excluded in purpose
+                map.put(p.getScheme(), p);
+                if (defaultProvider == null) {
+                    defaultProvider = p;
                 }
             }
             providers = map;

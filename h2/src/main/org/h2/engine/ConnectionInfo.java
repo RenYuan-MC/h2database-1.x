@@ -15,8 +15,6 @@ import org.h2.api.ErrorCode;
 import org.h2.command.dml.SetTypes;
 import org.h2.message.DbException;
 import org.h2.security.SHA256;
-import org.h2.store.fs.FilePathEncrypt;
-import org.h2.store.fs.FilePathRec;
 import org.h2.store.fs.FileUtils;
 import org.h2.util.NetworkConnectionInfo;
 import org.h2.util.SortedProperties;
@@ -82,13 +80,8 @@ public class ConnectionInfo implements Cloneable {
         convertPasswords();
         String recoverTest = removeProperty("RECOVER_TEST", null);
         if (recoverTest != null) {
-            FilePathRec.register();
-            try {
-                Utils.callStaticMethod("org.h2.store.RecoverTester.init", recoverTest);
-            } catch (Exception e) {
-                throw DbException.convert(e);
-            }
-            name = "rec:" + name;
+            // RenYuan wasm branch: the record-and-replay file system is not available.
+            throw DbException.getUnsupportedException("RECOVER_TEST");
         }
     }
 
@@ -303,23 +296,9 @@ public class ConnectionInfo implements Cloneable {
         char[] password = removePassword();
         boolean passwordHash = removeProperty("PASSWORD_HASH", false);
         if (getProperty("CIPHER", null) != null) {
-            // split password into (filePassword+' '+userPassword)
-            int space = -1;
-            for (int i = 0, len = password.length; i < len; i++) {
-                if (password[i] == ' ') {
-                    space = i;
-                    break;
-                }
-            }
-            if (space < 0) {
-                throw DbException.get(ErrorCode.WRONG_PASSWORD_FORMAT);
-            }
-            char[] np = Arrays.copyOfRange(password, space + 1, password.length);
-            char[] filePassword = Arrays.copyOf(password, space);
-            Arrays.fill(password, (char) 0);
-            password = np;
-            fileEncryptionKey = FilePathEncrypt.getPasswordBytes(filePassword);
-            filePasswordHash = hashPassword(passwordHash, "file", filePassword);
+            // RenYuan wasm branch: encrypted databases need the encrypting file system,
+            // which is not part of the browser build.
+            throw DbException.getUnsupportedException("CIPHER");
         }
         userPasswordHash = hashPassword(passwordHash, user, password);
     }

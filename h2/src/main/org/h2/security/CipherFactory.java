@@ -65,7 +65,8 @@ public class CipherFactory {
      * property at the time of class initialization.
      * Null if it is not set.
      */
-    public static final String DEFAULT_LEGACY_ALGORITHMS = getLegacyAlgorithmsSilently();
+    // RenYuan wasm branch: java.security is not available in the browser runtime.
+    public static final String DEFAULT_LEGACY_ALGORITHMS = null;
 
     private static final String KEYSTORE =
             "~/.h2.keystore";

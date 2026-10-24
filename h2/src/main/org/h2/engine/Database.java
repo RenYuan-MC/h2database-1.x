@@ -72,7 +72,6 @@ import org.h2.table.TableSynonym;
 import org.h2.table.TableType;
 import org.h2.table.TableView;
 import org.h2.tools.DeleteDbFiles;
-import org.h2.tools.Server;
 import org.h2.util.CurrentTimestamp;
 import org.h2.util.JdbcUtils;
 import org.h2.util.MathUtils;
@@ -202,7 +201,6 @@ public class Database implements DataHandler, CastDataProvider {
     private SmallLRUCache<String, String[]> lobFileListCache;
     private final boolean autoServerMode;
     private final int autoServerPort;
-    private Server server;
     private HashMap<TableLinkConnection, TableLinkConnection> linkConnections;
     private final TempFileDeleter tempFileDeleter = TempFileDeleter.getInstance();
     private PageStore pageStore;
@@ -652,11 +650,8 @@ public class Database implements DataHandler, CastDataProvider {
             }
             if (!readOnly && fileLockMethod != FileLockMethod.NO) {
                 if (fileLockMethod != FileLockMethod.FS) {
-                    lock = new FileLock(traceSystem, lockFileName, Constants.LOCK_SLEEP);
-                    lock.lock(fileLockMethod);
-                    if (autoServerMode) {
-                        startServer(lock.getUniqueId());
-                    }
+                    // RenYuan wasm branch: the browser build has a single process and a
+                    // read-only image, so no lock file is created.
                 }
             }
             deleteOldTempFiles();
@@ -870,33 +865,12 @@ public class Database implements DataHandler, CastDataProvider {
     }
 
     private void startServer(String key) {
-        try {
-            server = Server.createTcpServer(
-                    "-tcpPort", Integer.toString(autoServerPort),
-                    "-tcpAllowOthers",
-                    "-tcpDaemon",
-                    "-key", key, databaseName);
-            server.start();
-        } catch (SQLException e) {
-            throw DbException.convert(e);
-        }
-        String localAddress = NetUtils.getLocalAddress();
-        String address = localAddress + ":" + server.getPort();
-        lock.setProperty("server", address);
-        String hostName = NetUtils.getHostName(localAddress);
-        lock.setProperty("hostName", hostName);
-        lock.save();
+        // RenYuan wasm branch: AUTO_SERVER mode is not available in the browser build.
+        throw DbException.getUnsupportedException("AUTO_SERVER");
     }
 
     private void stopServer() {
-        if (server != null) {
-            Server s = server;
-            // avoid calling stop recursively
-            // because stopping the server will
-            // try to close the database as well
-            server = null;
-            s.stop();
-        }
+        // RenYuan wasm branch: AUTO_SERVER mode is not available in the browser build.
     }
 
     private void recompileInvalidViews(Session session) {
@@ -1914,6 +1888,11 @@ public class Database implements DataHandler, CastDataProvider {
 
     private void deleteOldTempFiles() {
         String path = FileUtils.getParent(databaseName);
+        if (path == null) {
+            // RenYuan wasm branch: virtual file names (e.g. "wasm:db") have no parent directory,
+            // and there are never temporary files to clean up in that case.
+            return;
+        }
         for (String name : FileUtils.newDirectoryStream(path)) {
             if (name.endsWith(Constants.SUFFIX_TEMP_FILE) &&
                     name.startsWith(databaseName)) {
@@ -2940,10 +2919,17 @@ public class Database implements DataHandler, CastDataProvider {
 
         TableEngine engine = tableEngines.get(tableEngine);
         if (engine == null) {
-            try {
-                engine = (TableEngine) JdbcUtils.loadUserClass(tableEngine).getDeclaredConstructor().newInstance();
-            } catch (Exception e) {
-                throw DbException.convert(e);
+            // RenYuan wasm branch: wasmGC does not keep constructor metadata, so the built-in
+            // MVStore engine is created without reflection.
+            if (MVTableEngine.class.getName().equals(tableEngine)) {
+                engine = new MVTableEngine();
+            } else {
+                try {
+                    engine = (TableEngine) JdbcUtils.loadUserClass(tableEngine)
+                            .getDeclaredConstructor().newInstance();
+                } catch (Exception e) {
+                    throw DbException.convert(e);
+                }
             }
             tableEngines.put(tableEngine, engine);
         }

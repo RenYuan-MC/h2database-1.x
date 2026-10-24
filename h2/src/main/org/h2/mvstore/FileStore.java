@@ -13,9 +13,6 @@ import java.nio.channels.OverlappingFileLockException;
 import java.util.concurrent.atomic.AtomicLong;
 import org.h2.mvstore.cache.FilePathCache;
 import org.h2.store.fs.FilePath;
-import org.h2.store.fs.FilePathDisk;
-import org.h2.store.fs.FilePathEncrypt;
-import org.h2.store.fs.FilePathNio;
 
 /**
  * The default storage mechanism of the MVStore. This implementation persists
@@ -130,14 +127,8 @@ public class FileStore {
         }
         // ensure the Cache file system is registered
         FilePathCache.INSTANCE.getScheme();
-        FilePath p = FilePath.get(fileName);
-        // if no explicit scheme was specified, NIO is used
-        if (p instanceof FilePathDisk &&
-                !fileName.startsWith(p.getScheme() + ":")) {
-            // ensure the NIO file system is registered
-            FilePathNio.class.getName();
-            fileName = "nio:" + fileName;
-        }
+        // RenYuan wasm branch: the browser build resolves every path through the
+        // registered providers (mem / wasm), so the NIO default is not needed.
         this.fileName = fileName;
         FilePath f = FilePath.get(fileName);
         FilePath parent = f.getParent();
@@ -152,9 +143,8 @@ public class FileStore {
         try {
             file = f.open(readOnly ? "r" : "rw");
             if (encryptionKey != null) {
-                byte[] key = FilePathEncrypt.getPasswordBytes(encryptionKey);
-                encryptedFile = file;
-                file = new FilePathEncrypt.FileEncrypt(fileName, key, file);
+                // RenYuan wasm branch: the encrypting file system is not available.
+                throw new UnsupportedOperationException("encrypted databases");
             }
             try {
                 if (readOnly) {

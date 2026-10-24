@@ -20,8 +20,6 @@ import org.h2.util.geometry.EWKTUtils;
 import org.h2.util.geometry.GeometryUtils;
 import org.h2.util.geometry.GeometryUtils.EnvelopeAndDimensionSystemTarget;
 import org.h2.util.geometry.GeometryUtils.EnvelopeTarget;
-import org.h2.util.geometry.JTSUtils;
-import org.locationtech.jts.geom.Geometry;
 
 /**
  * Implementation of the GEOMETRY data type.
@@ -94,15 +92,8 @@ public class ValueGeometry extends Value {
      * @return the value
      */
     public static ValueGeometry getFromGeometry(Object o) {
-        try {
-            EnvelopeAndDimensionSystemTarget target = new EnvelopeAndDimensionSystemTarget();
-            Geometry g = (Geometry) o;
-            JTSUtils.parseGeometry(g, target);
-            return (ValueGeometry) Value.cache(new ValueGeometry( //
-                    JTSUtils.geometry2ewkb(g, target.getDimensionSystem()), target.getEnvelope()));
-        } catch (RuntimeException ex) {
-            throw DbException.get(ErrorCode.DATA_CONVERSION_ERROR_1, String.valueOf(o));
-        }
+        // RenYuan wasm branch: JTS is not available in the browser build.
+        throw DbException.getUnsupportedException("JTS");
     }
 
     /**
@@ -171,23 +162,6 @@ public class ValueGeometry extends Value {
         return envelope != null
                 ? Value.cache(new ValueGeometry(EWKBUtils.envelope2wkb(envelope), envelope))
                 : ValueNull.INSTANCE;
-    }
-
-    /**
-     * Get a copy of geometry object. Geometry object is mutable. The returned
-     * object is therefore copied before returning.
-     *
-     * @return a copy of the geometry object
-     */
-    public Geometry getGeometry() {
-        if (geometry == null) {
-            try {
-                geometry = JTSUtils.ewkb2geometry(bytes, getDimensionSystem());
-            } catch (RuntimeException ex) {
-                throw DbException.convert(ex);
-            }
-        }
-        return ((Geometry) geometry).copy();
     }
 
     /**
@@ -296,9 +270,7 @@ public class ValueGeometry extends Value {
 
     @Override
     public Object getObject() {
-        if (DataType.GEOMETRY_CLASS != null) {
-            return getGeometry();
-        }
+        // RenYuan wasm branch: JTS is not available in the browser build.
         return getEWKT();
     }
 

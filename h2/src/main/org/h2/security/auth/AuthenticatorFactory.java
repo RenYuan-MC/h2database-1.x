@@ -15,6 +15,7 @@ public class AuthenticatorFactory {
      * @return authenticator instance.
      */
     public static Authenticator createAuthenticator() {
-        return DefaultAuthenticator.getInstance();
+        // RenYuan wasm branch: XML based authenticator configuration is not available.
+        throw new UnsupportedOperationException("authenticator configuration");
     }
 }
