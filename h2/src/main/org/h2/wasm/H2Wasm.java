@@ -3,24 +3,26 @@
  * and the EPL 1.0 (https://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  *
- * RenYuan wasm branch: JavaScript entry point for reading H2 databases inside a browser runtime.
+ * RenYuan wasm branch: JavaScript entry point for reading and editing H2 databases
+ * inside a browser runtime.
  */
 package org.h2.wasm;
 
 import java.util.Base64;
 import java.util.Properties;
-import org.h2.command.Prepared;
+import org.h2.command.CommandInterface;
 import org.h2.engine.ConnectionInfo;
 import org.h2.engine.Engine;
 import org.h2.engine.Session;
 import org.h2.result.ResultInterface;
+import org.h2.result.ResultWithGeneratedKeys;
 import org.h2.store.fs.wasm.FilePathWasm;
 import org.h2.value.Value;
 import org.h2.value.ValueNull;
 import org.teavm.jso.JSExport;
 
 /**
- * Exposes a small read-only API to JavaScript. Everything is returned as JSON strings so that the
+ * Exposes a small SQL API to JavaScript. Everything is returned as JSON strings so that the
  * caller does not need any Java object bridge.
  */
 public final class H2Wasm {
@@ -34,7 +36,7 @@ public final class H2Wasm {
      * Open a database image.
      *
      * @param base64 the database file bytes encoded with Base64
-     * @param user the user name, may be empty to use "sa"
+     * @param user the user name, {@code null} to use "sa", an empty string for an empty user
      * @param password the password, may be empty
      * @return a JSON result
      */
@@ -43,18 +45,18 @@ public final class H2Wasm {
         try {
             close();
             byte[] data = Base64.getDecoder().decode(base64);
-            FilePathWasm.setDatabase(data);
-            String userName = user == null || user.isEmpty() ? "sa" : user;
+            FilePathWasm.loadDatabase(data);
+            String userName = user == null ? "sa" : user;
             Properties properties = new Properties();
             properties.setProperty("USER", userName);
             properties.setProperty("PASSWORD", password == null ? "" : password);
             ConnectionInfo info = new ConnectionInfo(
-                    "jdbc:h2:wasm:db;ACCESS_MODE_DATA=r;FILE_LOCK=NO;IFEXISTS=TRUE", properties);
+                    "jdbc:h2:wasm:db;ACCESS_MODE_DATA=rw;FILE_LOCK=NO;IFEXISTS=TRUE", properties);
             session = Engine.getInstance().createSession(info);
             return "{\"ok\":true}";
         } catch (Throwable e) {
             session = null;
-            FilePathWasm.clearDatabase();
+            FilePathWasm.clear();
             return error(e);
         }
     }
@@ -82,48 +84,52 @@ public final class H2Wasm {
             return "{\"ok\":false,\"error\":\"database is not open\"}";
         }
         try {
-            Prepared prepared = session.prepare(sql);
-            if (!prepared.isQuery()) {
-                int updated = prepared.update();
-                return "{\"ok\":true,\"updated\":" + updated + '}';
-            }
-            ResultInterface result = prepared.query(100000);
+            CommandInterface command = session.prepareCommand(sql, 0);
             try {
-                int columnCount = result.getVisibleColumnCount();
-                StringBuilder builder = new StringBuilder(4096);
-                builder.append("{\"ok\":true,\"columns\":[");
-                for (int i = 0; i < columnCount; i++) {
-                    if (i > 0) {
-                        builder.append(',');
-                    }
-                    appendJsonString(builder, result.getAlias(i));
+                if (!command.isQuery()) {
+                    ResultWithGeneratedKeys result = command.executeUpdate(null);
+                    return "{\"ok\":true,\"updated\":" + result.getUpdateCount() + '}';
                 }
-                builder.append("],\"rows\":[");
-                boolean firstRow = true;
-                while (result.next()) {
-                    if (!firstRow) {
-                        builder.append(',');
-                    }
-                    firstRow = false;
-                    Value[] row = result.currentRow();
-                    builder.append('[');
+                ResultInterface result = command.executeQuery(100000, false);
+                try {
+                    int columnCount = result.getVisibleColumnCount();
+                    StringBuilder builder = new StringBuilder(4096);
+                    builder.append("{\"ok\":true,\"columns\":[");
                     for (int i = 0; i < columnCount; i++) {
                         if (i > 0) {
                             builder.append(',');
                         }
-                        Value value = i < row.length ? row[i] : null;
-                        if (value == null || value == ValueNull.INSTANCE) {
-                            builder.append("null");
-                        } else {
-                            appendJsonString(builder, value.getString());
-                        }
+                        appendJsonString(builder, result.getAlias(i));
                     }
-                    builder.append(']');
+                    builder.append("],\"rows\":[");
+                    boolean firstRow = true;
+                    while (result.next()) {
+                        if (!firstRow) {
+                            builder.append(',');
+                        }
+                        firstRow = false;
+                        Value[] row = result.currentRow();
+                        builder.append('[');
+                        for (int i = 0; i < columnCount; i++) {
+                            if (i > 0) {
+                                builder.append(',');
+                            }
+                            Value value = i < row.length ? row[i] : null;
+                            if (value == null || value == ValueNull.INSTANCE) {
+                                builder.append("null");
+                            } else {
+                                appendJsonString(builder, value.getString());
+                            }
+                        }
+                        builder.append(']');
+                    }
+                    builder.append("]}");
+                    return builder.toString();
+                } finally {
+                    result.close();
                 }
-                builder.append("]}");
-                return builder.toString();
             } finally {
-                result.close();
+                command.close();
             }
         } catch (Throwable e) {
             return error(e);
@@ -131,7 +137,32 @@ public final class H2Wasm {
     }
 
     /**
-     * Close the database and release the image.
+     * Commit the pending transaction, close the database and return the final file image.
+     *
+     * @return a JSON result with the base64 encoded database file
+     */
+    @JSExport
+    public static String save() {
+        if (session == null) {
+            return "{\"ok\":false,\"error\":\"database is not open\"}";
+        }
+        Session current = session;
+        try {
+            current.commit(true);
+            current.close();
+            session = null;
+            byte[] data = FilePathWasm.exportDatabase();
+            if (data == null) {
+                return "{\"ok\":false,\"error\":\"no database image\"}";
+            }
+            return "{\"ok\":true,\"base64\":\"" + Base64.getEncoder().encodeToString(data) + "\"}";
+        } catch (Throwable e) {
+            return error(e);
+        }
+    }
+
+    /**
+     * Close the database and release the image without exporting it.
      */
     @JSExport
     public static void close() {
@@ -143,7 +174,7 @@ public final class H2Wasm {
             }
             session = null;
         }
-        FilePathWasm.clearDatabase();
+        FilePathWasm.clear();
     }
 
     private static String error(Throwable e) {

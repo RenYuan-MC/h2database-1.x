@@ -3,8 +3,8 @@
  * and the EPL 1.0 (https://h2database.com/html/license.html).
  * Initial Developer: H2 Group
  *
- * RenYuan wasm branch: a read-only file system that exposes a database image
- * passed in from JavaScript.
+ * RenYuan wasm branch: a fully in-memory, writable file system. The database image
+ * is passed in from JavaScript and exported back after the engine has closed it.
  */
 package org.h2.store.fs.wasm;
 
@@ -13,11 +13,14 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.h2.store.fs.FilePath;
 
 /**
- * A read-only file system backed by a single in-memory database image.
+ * An in-memory file system with a single database image.
  */
 public class FilePathWasm extends FilePath {
 
@@ -26,31 +29,142 @@ public class FilePathWasm extends FilePath {
      */
     public static final String SCHEME = "wasm";
 
-    private static volatile byte[] database;
+    /**
+     * The name used for the database that is passed in from JavaScript.
+     */
+    public static final String DATABASE = "wasm:db.mv.db";
+
+    private static final Map<String, Entry> FILES = new LinkedHashMap<>();
+
+    private static volatile String databaseName = DATABASE;
 
     /**
-     * Set the database image that will be served by this provider.
+     * One file in the virtual file system.
+     */
+    static final class Entry {
+
+        private byte[] data;
+
+        private int length;
+
+        private boolean readOnly;
+
+        private long lastModified;
+
+        Entry(byte[] initial) {
+            data = initial.length == 0 ? new byte[1024] : new byte[Math.max(1024, initial.length)];
+            System.arraycopy(initial, 0, data, 0, initial.length);
+            length = initial.length;
+            lastModified = System.currentTimeMillis();
+        }
+
+        synchronized int length() {
+            return length;
+        }
+
+        synchronized void ensureCapacity(int capacity) {
+            if (capacity > data.length) {
+                int size = data.length;
+                while (size < capacity) {
+                    size <<= 1;
+                }
+                byte[] next = new byte[size];
+                System.arraycopy(data, 0, next, 0, length);
+                data = next;
+            }
+        }
+
+        synchronized int read(long position, byte[] buffer, int offset, int count) {
+            if (position >= length) {
+                return -1;
+            }
+            int n = (int) Math.min(count, length - position);
+            System.arraycopy(data, (int) position, buffer, offset, n);
+            return n;
+        }
+
+        synchronized void write(long position, byte[] buffer, int offset, int count) {
+            ensureCapacity((int) (position + count));
+            if (position > length) {
+                // writing past the end leaves a hole that must read as zeroes
+                Arrays.fill(data, length, (int) position, (byte) 0);
+            }
+            System.arraycopy(buffer, offset, data, (int) position, count);
+            if (position + count > length) {
+                length = (int) (position + count);
+            }
+            lastModified = System.currentTimeMillis();
+        }
+
+        synchronized void truncate(int newLength) {
+            if (newLength < length) {
+                length = newLength;
+            }
+            lastModified = System.currentTimeMillis();
+        }
+
+        synchronized byte[] copy() {
+            byte[] result = new byte[length];
+            System.arraycopy(data, 0, result, 0, length);
+            return result;
+        }
+    }
+
+    /**
+     * Load the database image that JavaScript passed in.
      *
      * @param data the database file bytes
      */
-    public static void setDatabase(byte[] data) {
-        database = data;
+    public static void loadDatabase(byte[] data) {
+        clear();
+        synchronized (FILES) {
+            FILES.put(DATABASE, new Entry(data));
+        }
+        databaseName = DATABASE;
     }
 
     /**
-     * Get the database image, or {@code null} if none is loaded.
+     * Get the current database image.
      *
-     * @return the database file bytes
+     * @return the database file bytes, or {@code null} if none is loaded
      */
-    public static byte[] getDatabase() {
-        return database;
+    public static byte[] exportDatabase() {
+        synchronized (FILES) {
+            Entry entry = FILES.get(databaseName);
+            return entry != null ? entry.copy() : null;
+        }
     }
 
     /**
-     * Release the database image.
+     * Drop every file of the virtual file system.
      */
-    public static void clearDatabase() {
-        database = null;
+    public static void clear() {
+        synchronized (FILES) {
+            FILES.clear();
+        }
+    }
+
+    static Entry entry(String name, boolean create) {
+        synchronized (FILES) {
+            Entry entry = FILES.get(name);
+            if (entry == null && create) {
+                entry = new Entry(new byte[0]);
+                FILES.put(name, entry);
+            }
+            return entry;
+        }
+    }
+
+    static void remove(String name) {
+        synchronized (FILES) {
+            FILES.remove(name);
+        }
+    }
+
+    static boolean contains(String name) {
+        synchronized (FILES) {
+            return FILES.containsKey(name);
+        }
     }
 
     public FilePathWasm() {
@@ -67,33 +181,62 @@ public class FilePathWasm extends FilePath {
 
     @Override
     public long size() {
-        byte[] data = database;
-        return isDatabase() && data != null ? data.length : 0;
+        Entry entry = entry(name, false);
+        return entry != null ? entry.length() : 0;
     }
 
     @Override
     public void moveTo(FilePath newName, boolean atomicReplace) {
-        throw unsupported();
+        String target = newName.toString();
+        synchronized (FILES) {
+            Entry entry = FILES.get(name);
+            if (entry == null) {
+                throw new IllegalStateException("File not found: " + name);
+            }
+            if (!atomicReplace && FILES.containsKey(target)) {
+                throw new IllegalStateException("File exists: " + target);
+            }
+            FILES.remove(name);
+            FILES.put(target, entry);
+        }
     }
 
     @Override
     public boolean createFile() {
-        return false;
+        synchronized (FILES) {
+            if (FILES.containsKey(name)) {
+                return false;
+            }
+            FILES.put(name, new Entry(new byte[0]));
+            return true;
+        }
     }
 
     @Override
     public boolean exists() {
-        return isDatabase() && database != null;
+        return contains(name);
     }
 
     @Override
     public void delete() {
-        throw unsupported();
+        remove(name);
     }
 
     @Override
     public List<FilePath> newDirectoryStream() {
-        return new ArrayList<>();
+        List<FilePath> list = new ArrayList<>();
+        String prefix = name.endsWith("/") ? name : name + "/";
+        synchronized (FILES) {
+            for (String file : FILES.keySet()) {
+                if (file.startsWith(prefix)) {
+                    String rest = file.substring(prefix.length());
+                    if (!rest.isEmpty() && rest.indexOf('/') < 0) {
+                        list.add(new FilePathWasm(file));
+                    }
+                }
+            }
+        }
+        return list;
     }
 
     @Override
@@ -119,53 +262,87 @@ public class FilePathWasm extends FilePath {
 
     @Override
     public long lastModified() {
-        return 0L;
+        Entry entry = entry(name, false);
+        return entry != null ? entry.lastModified : 0L;
     }
 
     @Override
     public boolean canWrite() {
-        return false;
+        Entry entry = entry(name, false);
+        return entry != null && !entry.readOnly;
     }
 
     @Override
     public void createDirectory() {
-        throw unsupported();
+        // directories are implicit
     }
 
     @Override
-    public OutputStream newOutputStream(boolean append) throws IOException {
-        throw new IOException("read-only file system");
+    public OutputStream newOutputStream(boolean append) {
+        final Entry entry = entry(name, true);
+        final FileWasm channel = new FileWasm(entry, false);
+        if (append) {
+            channel.position(entry.length());
+        }
+        return new OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                channel.write(new byte[] { (byte) b }, 0, 1);
+            }
+
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+                channel.write(b, off, len);
+            }
+
+            @Override
+            public void close() throws IOException {
+                channel.close();
+            }
+        };
+    }
+
+    @Override
+    public InputStream newInputStream() {
+        final Entry entry = entry(name, true);
+        final FileWasm channel = new FileWasm(entry, true);
+        return new InputStream() {
+            @Override
+            public int read() throws IOException {
+                byte[] one = new byte[1];
+                int n = channel.read(one, 0, 1);
+                return n < 0 ? -1 : one[0] & 0xff;
+            }
+
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+                return channel.read(b, off, len);
+            }
+
+            @Override
+            public void close() throws IOException {
+                channel.close();
+            }
+        };
     }
 
     @Override
     public FileChannel open(String mode) throws IOException {
-        if (!"r".equals(mode)) {
-            throw new IOException("read-only file system");
-        }
-        byte[] data = database;
-        return new FileWasm(this, data != null ? data : new byte[0]);
-    }
-
-    @Override
-    public InputStream newInputStream() throws IOException {
-        throw new IOException("read-only file system");
+        Entry entry = entry(name, true);
+        return new FileWasm(entry, "r".equals(mode));
     }
 
     @Override
     public boolean setReadOnly() {
+        Entry entry = entry(name, false);
+        if (entry != null) {
+            entry.readOnly = true;
+        }
         return true;
     }
 
     @Override
     public String getScheme() {
         return SCHEME;
-    }
-
-    private boolean isDatabase() {
-        return name != null && name.endsWith(".mv.db");
-    }
-
-    private static UnsupportedOperationException unsupported() {
-        return new UnsupportedOperationException("read-only file system");
     }
 }
