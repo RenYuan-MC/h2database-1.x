@@ -116,11 +116,23 @@ public class FilePathWasm extends FilePath {
      * @param data the database file bytes
      */
     public static void loadDatabase(byte[] data) {
+        loadDatabase(data, DATABASE);
+    }
+
+    /**
+     * Load the database image that JavaScript passed in under the given virtual file name.
+     * The name decides which storage engine H2 uses: {@code .mv.db} selects MVStore and
+     * {@code .h2.db} selects PageStore.
+     *
+     * @param data the database file bytes
+     * @param name the virtual file name, for example {@code wasm:db.h2.db}
+     */
+    public static void loadDatabase(byte[] data, String name) {
         clear();
         synchronized (FILES) {
-            FILES.put(DATABASE, new Entry(data));
+            FILES.put(name, new Entry(data));
         }
-        databaseName = DATABASE;
+        databaseName = name;
     }
 
     /**

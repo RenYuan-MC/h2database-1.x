@@ -33,6 +33,17 @@ public final class H2Wasm {
     }
 
     /**
+     * The virtual file name used for MVStore images.
+     */
+    private static final String MV_FILE = "wasm:db.mv.db";
+
+    /**
+     * The virtual file name used for PageStore images. H2 1.4 chooses the storage engine
+     * from the file suffix, so PageStore databases have to be loaded as {@code .h2.db}.
+     */
+    private static final String PAGE_FILE = "wasm:db.h2.db";
+
+    /**
      * Open a database image.
      *
      * @param base64 the database file bytes encoded with Base64
@@ -42,10 +53,27 @@ public final class H2Wasm {
      */
     @JSExport
     public static String open(String base64, String user, String password) {
+        return openImage(base64, user, password, MV_FILE);
+    }
+
+    /**
+     * Open a PageStore (legacy {@code .h2.db}) database image.
+     *
+     * @param base64 the database file bytes encoded with Base64
+     * @param user the user name, {@code null} to use "sa", an empty string for an empty user
+     * @param password the password, may be empty
+     * @return a JSON result
+     */
+    @JSExport
+    public static String openPageStore(String base64, String user, String password) {
+        return openImage(base64, user, password, PAGE_FILE);
+    }
+
+    private static String openImage(String base64, String user, String password, String fileName) {
         try {
             close();
             byte[] data = Base64.getDecoder().decode(base64);
-            FilePathWasm.loadDatabase(data);
+            FilePathWasm.loadDatabase(data, fileName);
             String userName = user == null ? "sa" : user;
             Properties properties = new Properties();
             properties.setProperty("USER", userName);
